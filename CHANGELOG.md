@@ -1,3 +1,130 @@
+v9.3.3 (2024-08-08)
+-------------------------
+ * Don't try to load ticket body when loading tickets with a contact
+ * Authenticate metrics endpoint using org.prometheus_token instead of an API token
+
+v9.3.2 (2024-08-08)
+-------------------------
+ * Update test database
+ * Replace ticket bodies with notes on the open event
+
+v9.3.1 (2024-08-02)
+-------------------------
+ * Update to latest goflow/gocommon
+
+v9.3.0 (2024-07-29)
+-------------------------
+ * Add S3 to runtime, replace storages
+ * Use minio for local dev and tests
+
+v9.2.2 (2024-07-23)
+-------------------------
+ * Simplify config param name to configure FCM relayer syncing
+ * Fix search endpoint docs
+
+v9.2.1 (2024-07-18)
+-------------------------
+ * Fix ignoring limit on contact search endpoint and improve tests
+
+v9.2.0 (2024-07-17)
+-------------------------
+ * Update README
+
+v9.1.87 (2024-07-16)
+-------------------------
+ * Update goflow which adds validation of attachments in flow definitions
+
+v9.1.86 (2024-07-16)
+-------------------------
+ * Update goflow
+
+v9.1.85 (2024-07-16)
+-------------------------
+ * Fix sending broadcast with template
+
+v9.1.84 (2024-07-16)
+-------------------------
+ * Remove special error case for broadcast with no recipients since this is no longer a thing we can resolve at request time
+
+v9.1.83 (2024-07-15)
+-------------------------
+ * Fix creating broadcasts to a flow node so that we don't save all contact ids onto the broadcast
+
+v9.1.82 (2024-07-15)
+-------------------------
+ * Refresh fields when running schedule campaign events task
+
+v9.1.81 (2024-07-15)
+-------------------------
+ * Update deps
+
+v9.1.80 (2024-07-15)
+-------------------------
+ * Use new boolean fields on template translations
+
+v9.1.79 (2024-07-12)
+-------------------------
+ * Add FCM token IDs verification
+ * Add android sync endpoint
+
+v9.1.78 (2024-07-10)
+-------------------------
+ * Stop reading from TemplateTranslation.is_active which we're going to drop
+
+v9.1.77 (2024-07-05)
+-------------------------
+ * Start populating Msg.is_android for new messages
+
+v9.1.76 (2024-07-04)
+-------------------------
+ * Add support for templates on broadcasts
+
+v9.1.75 (2024-07-03)
+-------------------------
+ * Update to latest goflow which removes namespace from assets.TemplateTranslation
+ * Remove deprecated Broadcast.template_state
+
+v9.1.74 (2024-07-03)
+-------------------------
+ * Deprecate broadcast.template_state and add broadcast.expressions
+
+v9.1.73 (2024-07-03)
+-------------------------
+ * Update goflow which changes how broadcast translations are selected
+ * Add cron to trigger sync for old seen android channels
+ * Simplify getting single channel by ID
+
+v9.1.72 (2024-07-02)
+-------------------------
+ * Fix creating broadcast to node with more than 65K contacts
+
+v9.1.71 (2024-07-02)
+-------------------------
+ * Update deps
+ * Add initial support for templates on broadcasts
+ * Replace JSONMap with JSONB generic type
+
+v9.1.70 (2024-06-25)
+-------------------------
+ * Add support for exclusions on broadcasts
+
+v9.1.69 (2024-06-20)
+-------------------------
+ * Add support for creating broadcasts with schedules
+
+v9.1.68 (2024-06-19)
+-------------------------
+ * Return no recipients case as 422 status with error code
+ * Add node UUID param to msg/broadcast endpoint
+
+v9.1.67 (2024-06-19)
+-------------------------
+ * Update FCM client
+
+v9.1.66 (2024-06-17)
+-------------------------
+ * Switch to official Elastic v8 client library
+
 v9.1.65 (2024-06-14)
 -------------------------
  * Fix clearing wait timeouts

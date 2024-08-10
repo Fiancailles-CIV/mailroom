@@ -7,10 +7,11 @@ import (
 	"path"
 	"time"
 
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/gocommon/httpx"
 	"github.com/nyaruka/gocommon/jsonx"
-	"github.com/nyaruka/gocommon/storage"
+	"github.com/nyaruka/gocommon/s3x"
 	"github.com/nyaruka/gocommon/stringsx"
 	"github.com/nyaruka/gocommon/uuids"
 	"github.com/nyaruka/goflow/assets"
@@ -69,7 +70,7 @@ func NewChannelLogForIncoming(t ChannelLogType, ch *Channel, r *httpx.Recorder, 
 
 func newChannelLog(t ChannelLogType, ch *Channel, r *httpx.Recorder, redactVals []string) *ChannelLog {
 	return &ChannelLog{
-		uuid:      ChannelLogUUID(uuids.New()),
+		uuid:      ChannelLogUUID(uuids.NewV4()),
 		type_:     t,
 		channel:   ch,
 		httpLogs:  []*httpx.Log{},
@@ -172,7 +173,7 @@ func InsertChannelLogs(ctx context.Context, rt *runtime.Runtime, logs []*Channel
 		} else {
 			// otherwise write to database so it's retrievable
 			unattached = append(unattached, &dbChannelLog{
-				UUID:      ChannelLogUUID(uuids.New()),
+				UUID:      ChannelLogUUID(uuids.NewV4()),
 				ChannelID: l.channel.ID(),
 				Type:      l.type_,
 				HTTPLogs:  jsonx.MustMarshal(l.httpLogs),
@@ -185,15 +186,17 @@ func InsertChannelLogs(ctx context.Context, rt *runtime.Runtime, logs []*Channel
 	}
 
 	if len(attached) > 0 {
-		uploads := make([]*storage.Upload, len(attached))
+		uploads := make([]*s3x.Upload, len(attached))
 		for i, l := range attached {
-			uploads[i] = &storage.Upload{
-				Path:        l.path(),
+			uploads[i] = &s3x.Upload{
+				Bucket:      rt.Config.S3LogsBucket,
+				Key:         l.path(),
 				ContentType: "application/json",
 				Body:        jsonx.MustMarshal(l),
+				ACL:         s3.ObjectCannedACLPrivate,
 			}
 		}
-		if err := rt.LogStorage.BatchPut(ctx, uploads); err != nil {
+		if err := rt.S3.BatchPut(ctx, uploads, 32); err != nil {
 			return fmt.Errorf("error writing attached channel logs to storage: %w", err)
 		}
 	}

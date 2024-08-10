@@ -20,12 +20,22 @@ jobs:
           - 5432:5432
         options: --name textit-postgres-1 --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
       elastic:
-        image: elasticsearch:7.17.9
+        image: elasticsearch:8.13.4
         ports:
           - 9200:9200
         env:
           discovery.type: single-node
+          xpack.security.enabled: false
         options: --health-cmd "curl http://localhost:9200/_cluster/health" --health-interval 10s --health-timeout 5s --health-retries 5
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: root
+          MINIO_ROOT_PASSWORD: tembatemba
+          MINIO_DEFAULT_BUCKETS: test-attachments,test-sessions,test-logs
+        ports:
+          - 9000:9000     
+        options: --health-cmd "mc ready local" --health-interval 10s --health-timeout 5s --health-retries 5
 
     steps:
       - name: Checkout code

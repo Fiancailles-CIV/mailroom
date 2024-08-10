@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/nyaruka/goflow/assets"
 	"github.com/nyaruka/goflow/contactql"
 	"github.com/nyaruka/mailroom/core/models"
 	"github.com/nyaruka/mailroom/core/search"
@@ -17,23 +16,24 @@ func init() {
 	web.RegisterRoute(http.MethodPost, "/mr/contact/search", web.RequireAuthToken(web.JSONPayload(handleSearch)))
 }
 
-// Searches the contacts for an org
+// Searches the contacts in an org
 //
 //	{
 //	  "org_id": 1,
 //	  "group_id": 234,
 //	  "query": "age > 10",
-//	  "sort": "-age"
+//	  "sort": "-age",
+//	  "offset": 0,
+//	  "limit": 50
 //	}
 type searchRequest struct {
-	OrgID      models.OrgID       `json:"org_id"     validate:"required"`
-	GroupID    models.GroupID     `json:"group_id"`
-	GroupUUID  assets.GroupUUID   `json:"group_uuid"` // deprecated
+	OrgID      models.OrgID       `json:"org_id"      validate:"required"`
+	GroupID    models.GroupID     `json:"group_id"    validate:"required"`
 	ExcludeIDs []models.ContactID `json:"exclude_ids"`
 	Query      string             `json:"query"`
-	PageSize   int                `json:"page_size"`
-	Offset     int                `json:"offset"`
 	Sort       string             `json:"sort"`
+	Offset     int                `json:"offset"`
+	Limit      int                `json:"limit"`
 }
 
 // Response for a contact search
@@ -42,7 +42,6 @@ type searchRequest struct {
 //	  "query": "age > 10",
 //	  "contact_ids": [5,10,15],
 //	  "total": 3,
-//	  "offset": 0,
 //	  "metadata": {
 //	    "fields": [
 //	      {"key": "age", "name": "Age"}
@@ -50,12 +49,10 @@ type searchRequest struct {
 //	    "allow_as_group": true
 //	  }
 //	}
-type SearchResponse struct {
+type searchResponse struct {
 	Query      string                `json:"query"`
 	ContactIDs []models.ContactID    `json:"contact_ids"`
 	Total      int64                 `json:"total"`
-	Offset     int                   `json:"offset"`
-	Sort       string                `json:"sort"`
 	Metadata   *contactql.Inspection `json:"metadata,omitempty"`
 }
 
@@ -67,9 +64,12 @@ func handleSearch(ctx context.Context, rt *runtime.Runtime, r *searchRequest) (a
 	}
 
 	group := oa.GroupByID(r.GroupID)
+	if r.Limit == 0 {
+		r.Limit = 50
+	}
 
 	// perform our search
-	parsed, hits, total, err := search.GetContactIDsForQueryPage(ctx, rt, oa, group, r.ExcludeIDs, r.Query, r.Sort, r.Offset, 50)
+	parsed, hits, total, err := search.GetContactIDsForQueryPage(ctx, rt, oa, group, r.ExcludeIDs, r.Query, r.Sort, r.Offset, r.Limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("error searching page: %w", err)
 	}
@@ -84,12 +84,10 @@ func handleSearch(ctx context.Context, rt *runtime.Runtime, r *searchRequest) (a
 	}
 
 	// build our response
-	response := &SearchResponse{
+	response := &searchResponse{
 		Query:      normalized,
 		ContactIDs: hits,
 		Total:      total,
-		Offset:     r.Offset,
-		Sort:       r.Sort,
 		Metadata:   metadata,
 	}
 

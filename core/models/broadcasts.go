@@ -11,7 +11,6 @@ import (
 	"github.com/nyaruka/goflow/excellent/types"
 	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/goflow/flows/events"
-	"github.com/nyaruka/mailroom/core/goflow"
 	"github.com/nyaruka/mailroom/runtime"
 	"github.com/nyaruka/null/v3"
 )
@@ -22,57 +21,62 @@ type BroadcastID int
 // NilBroadcastID is our constant for a nil broadcast id
 const NilBroadcastID = BroadcastID(0)
 
-// TemplateState represents what state are templates are in, either already evaluated or unevaluated
-type TemplateState string
-
-const (
-	TemplateStateEvaluated   = TemplateState("evaluated")
-	TemplateStateUnevaluated = TemplateState("unevaluated")
-)
-
 // Broadcast represents a broadcast that needs to be sent
 type Broadcast struct {
-	ID            BroadcastID                 `json:"broadcast_id,omitempty"`
-	OrgID         OrgID                       `json:"org_id"`
-	Translations  flows.BroadcastTranslations `json:"translations"`
-	TemplateState TemplateState               `json:"template_state"`
-	BaseLanguage  i18n.Language               `json:"base_language"`
-	OptInID       OptInID                     `json:"optin_id"`
-	URNs          []urns.URN                  `json:"urns,omitempty"`
-	ContactIDs    []ContactID                 `json:"contact_ids,omitempty"`
-	GroupIDs      []GroupID                   `json:"group_ids,omitempty"`
-	Query         string                      `json:"query,omitempty"`
-	CreatedByID   UserID                      `json:"created_by_id,omitempty"`
-	ParentID      BroadcastID                 `json:"parent_id,omitempty"`
+	ID                BroadcastID                 `json:"broadcast_id,omitempty"`
+	OrgID             OrgID                       `json:"org_id"`
+	Translations      flows.BroadcastTranslations `json:"translations"`
+	BaseLanguage      i18n.Language               `json:"base_language"`
+	Expressions       bool                        `json:"expressions"`
+	OptInID           OptInID                     `json:"optin_id,omitempty"`
+	TemplateID        TemplateID                  `json:"template_id,omitempty"`
+	TemplateVariables []string                    `json:"template_variables,omitempty"`
+	GroupIDs          []GroupID                   `json:"group_ids,omitempty"`
+	ContactIDs        []ContactID                 `json:"contact_ids,omitempty"`
+	URNs              []urns.URN                  `json:"urns,omitempty"`
+	Query             string                      `json:"query,omitempty"`
+	NodeUUID          flows.NodeUUID              `json:"node_uuid,omitempty"`
+	Exclusions        Exclusions                  `json:"exclusions,omitempty"`
+	CreatedByID       UserID                      `json:"created_by_id,omitempty"`
+	ScheduleID        ScheduleID                  `json:"schedule_id,omitempty"`
+	ParentID          BroadcastID                 `json:"parent_id,omitempty"`
 }
 
 type dbBroadcast struct {
-	ID           BroadcastID                 `db:"id"`
-	OrgID        OrgID                       `db:"org_id"`
-	Translations flows.BroadcastTranslations `db:"translations"`
-	BaseLanguage i18n.Language               `db:"base_language"`
-	OptInID      OptInID                     `db:"optin_id"`
-	URNs         pq.StringArray              `db:"urns"`
-	Query        null.String                 `db:"query"`
-	CreatedByID  UserID                      `db:"created_by_id"`
-	ParentID     BroadcastID                 `db:"parent_id"`
+	ID                BroadcastID                        `db:"id"`
+	OrgID             OrgID                              `db:"org_id"`
+	Translations      JSONB[flows.BroadcastTranslations] `db:"translations"`
+	BaseLanguage      i18n.Language                      `db:"base_language"`
+	OptInID           OptInID                            `db:"optin_id"`
+	TemplateID        TemplateID                         `db:"template_id"`
+	TemplateVariables pq.StringArray                     `db:"template_variables"`
+	URNs              pq.StringArray                     `db:"urns"`
+	Query             null.String                        `db:"query"`
+	NodeUUID          null.String                        `db:"node_uuid"`
+	Exclusions        Exclusions                         `db:"exclusions"`
+	CreatedByID       UserID                             `db:"created_by_id"`
+	ScheduleID        ScheduleID                         `db:"schedule_id"`
+	ParentID          BroadcastID                        `db:"parent_id"`
 }
+
+var ErrNoRecipients = errors.New("can't create broadcast with no recipients")
 
 // NewBroadcast creates a new broadcast with the passed in parameters
 func NewBroadcast(orgID OrgID, translations flows.BroadcastTranslations,
-	state TemplateState, baseLanguage i18n.Language, optInID OptInID, urns []urns.URN, contactIDs []ContactID, groupIDs []GroupID, query string, createdByID UserID) *Broadcast {
+	baseLanguage i18n.Language, expressions bool, optInID OptInID, groupIDs []GroupID, contactIDs []ContactID, urns []urns.URN, query string, exclude Exclusions, createdByID UserID) *Broadcast {
 
 	return &Broadcast{
-		OrgID:         orgID,
-		Translations:  translations,
-		TemplateState: state,
-		BaseLanguage:  baseLanguage,
-		OptInID:       optInID,
-		URNs:          urns,
-		ContactIDs:    contactIDs,
-		GroupIDs:      groupIDs,
-		Query:         query,
-		CreatedByID:   createdByID,
+		OrgID:        orgID,
+		Translations: translations,
+		BaseLanguage: baseLanguage,
+		Expressions:  expressions,
+		OptInID:      optInID,
+		GroupIDs:     groupIDs,
+		ContactIDs:   contactIDs,
+		URNs:         urns,
+		Query:        query,
+		Exclusions:   exclude,
+		CreatedByID:  createdByID,
 	}
 }
 
@@ -93,20 +97,22 @@ func NewBroadcastFromEvent(ctx context.Context, tx DBorTx, oa *OrgAssets, event 
 		}
 	}
 
-	return NewBroadcast(oa.OrgID(), event.Translations, TemplateStateEvaluated, event.BaseLanguage, NilOptInID, event.URNs, contactIDs, groupIDs, event.ContactQuery, NilUserID), nil
+	return NewBroadcast(oa.OrgID(), event.Translations, event.BaseLanguage, true, NilOptInID, groupIDs, contactIDs, event.URNs, event.ContactQuery, NoExclusions, NilUserID), nil
 }
 
 func (b *Broadcast) CreateBatch(contactIDs []ContactID, isLast bool) *BroadcastBatch {
 	return &BroadcastBatch{
-		BroadcastID:   b.ID,
-		OrgID:         b.OrgID,
-		BaseLanguage:  b.BaseLanguage,
-		Translations:  b.Translations,
-		TemplateState: b.TemplateState,
-		OptInID:       b.OptInID,
-		CreatedByID:   b.CreatedByID,
-		ContactIDs:    contactIDs,
-		IsLast:        isLast,
+		BroadcastID:       b.ID,
+		OrgID:             b.OrgID,
+		Translations:      b.Translations,
+		BaseLanguage:      b.BaseLanguage,
+		Expressions:       b.Expressions,
+		OptInID:           b.OptInID,
+		TemplateID:        b.TemplateID,
+		TemplateVariables: b.TemplateVariables,
+		CreatedByID:       b.CreatedByID,
+		ContactIDs:        contactIDs,
+		IsLast:            isLast,
 	}
 }
 
@@ -130,20 +136,21 @@ func MarkBroadcastFailed(ctx context.Context, db DBorTx, id BroadcastID) error {
 
 // InsertBroadcast inserts the given broadcast into the DB
 func InsertBroadcast(ctx context.Context, db DBorTx, bcast *Broadcast) error {
-	ua := make(pq.StringArray, len(bcast.URNs))
-	for i := range bcast.URNs {
-		ua[i] = string(bcast.URNs[i])
-	}
 	dbb := &dbBroadcast{
-		ID:           bcast.ID,
-		OrgID:        bcast.OrgID,
-		Translations: bcast.Translations,
-		BaseLanguage: bcast.BaseLanguage,
-		OptInID:      bcast.OptInID,
-		URNs:         ua,
-		Query:        null.String(bcast.Query),
-		CreatedByID:  bcast.CreatedByID,
-		ParentID:     bcast.ParentID,
+		ID:                bcast.ID,
+		OrgID:             bcast.OrgID,
+		Translations:      JSONB[flows.BroadcastTranslations]{bcast.Translations},
+		BaseLanguage:      bcast.BaseLanguage,
+		OptInID:           bcast.OptInID,
+		TemplateID:        bcast.TemplateID,
+		TemplateVariables: StringArray(bcast.TemplateVariables),
+		URNs:              StringArray(bcast.URNs),
+		Query:             null.String(bcast.Query),
+		NodeUUID:          null.String(string(bcast.NodeUUID)),
+		Exclusions:        bcast.Exclusions,
+		CreatedByID:       bcast.CreatedByID,
+		ScheduleID:        bcast.ScheduleID,
+		ParentID:          bcast.ParentID,
 	}
 
 	err := BulkQuery(ctx, "inserting broadcast", db, sqlInsertBroadcast, []*dbBroadcast{dbb})
@@ -160,7 +167,7 @@ func InsertBroadcast(ctx context.Context, db DBorTx, bcast *Broadcast) error {
 	}
 
 	// insert our contacts
-	err = BulkQuery(ctx, "inserting broadcast contacts", db, sqlInsertBroadcastContacts, contacts)
+	err = BulkQueryBatches(ctx, "inserting broadcast contacts", db, sqlInsertBroadcastContacts, 1000, contacts)
 	if err != nil {
 		return fmt.Errorf("error inserting contacts for broadcast: %w", err)
 	}
@@ -182,19 +189,22 @@ func InsertBroadcast(ctx context.Context, db DBorTx, bcast *Broadcast) error {
 
 // InsertChildBroadcast clones the passed in broadcast as a parent, then inserts that broadcast into the DB
 func InsertChildBroadcast(ctx context.Context, db DBorTx, parent *Broadcast) (*Broadcast, error) {
-	child := NewBroadcast(
-		parent.OrgID,
-		parent.Translations,
-		parent.TemplateState,
-		parent.BaseLanguage,
-		parent.OptInID,
-		parent.URNs,
-		parent.ContactIDs,
-		parent.GroupIDs,
-		parent.Query,
-		parent.CreatedByID,
-	)
-	child.ParentID = parent.ID
+	child := &Broadcast{
+		OrgID:             parent.OrgID,
+		Translations:      parent.Translations,
+		BaseLanguage:      parent.BaseLanguage,
+		Expressions:       parent.Expressions,
+		OptInID:           parent.OptInID,
+		TemplateID:        parent.TemplateID,
+		TemplateVariables: parent.TemplateVariables,
+		GroupIDs:          parent.GroupIDs,
+		ContactIDs:        parent.ContactIDs,
+		URNs:              parent.URNs,
+		Query:             parent.Query,
+		Exclusions:        parent.Exclusions,
+		CreatedByID:       parent.CreatedByID,
+		ParentID:          parent.ID,
+	}
 
 	return child, InsertBroadcast(ctx, db, child)
 }
@@ -211,8 +221,8 @@ type broadcastGroup struct {
 
 const sqlInsertBroadcast = `
 INSERT INTO
-	msgs_broadcast( org_id,  parent_id, created_on, modified_on, status,  translations,  base_language,  urns,  optin_id,  query, is_active)
-			VALUES(:org_id, :parent_id, NOW()     , NOW(),       'Q',    :translations, :base_language, :urns, :optin_id, :query,      TRUE)
+	msgs_broadcast( org_id,  parent_id, created_on, modified_on, status,  translations,  base_language,  template_id,  template_variables,  urns,  query,  node_uuid,  exclusions,  optin_id,  schedule_id, is_active)
+			VALUES(:org_id, :parent_id, NOW()     , NOW(),       'Q',    :translations, :base_language, :template_id, :template_variables, :urns, :query, :node_uuid, :exclusions, :optin_id, :schedule_id,      TRUE)
 RETURNING id`
 
 const sqlInsertBroadcastContacts = `INSERT INTO msgs_broadcast_contacts(broadcast_id, contact_id) VALUES(:broadcast_id, :contact_id)`
@@ -220,15 +230,17 @@ const sqlInsertBroadcastGroups = `INSERT INTO msgs_broadcast_groups(broadcast_id
 
 // BroadcastBatch represents a batch of contacts that need messages sent for
 type BroadcastBatch struct {
-	BroadcastID   BroadcastID                 `json:"broadcast_id,omitempty"`
-	OrgID         OrgID                       `json:"org_id"`
-	Translations  flows.BroadcastTranslations `json:"translations"`
-	BaseLanguage  i18n.Language               `json:"base_language"`
-	TemplateState TemplateState               `json:"template_state"`
-	OptInID       OptInID                     `json:"optin_id"`
-	ContactIDs    []ContactID                 `json:"contact_ids,omitempty"`
-	CreatedByID   UserID                      `json:"created_by_id"`
-	IsLast        bool                        `json:"is_last"`
+	BroadcastID       BroadcastID                 `json:"broadcast_id,omitempty"`
+	OrgID             OrgID                       `json:"org_id"`
+	Translations      flows.BroadcastTranslations `json:"translations"`
+	BaseLanguage      i18n.Language               `json:"base_language"`
+	Expressions       bool                        `json:"expressions"`
+	OptInID           OptInID                     `json:"optin_id,omitempty"`
+	TemplateID        TemplateID                  `json:"template_id,omitempty"`
+	TemplateVariables []string                    `json:"template_variables,omitempty"`
+	ContactIDs        []ContactID                 `json:"contact_ids"`
+	CreatedByID       UserID                      `json:"created_by_id"`
+	IsLast            bool                        `json:"is_last"`
 }
 
 func (b *BroadcastBatch) CreateMessages(ctx context.Context, rt *runtime.Runtime, oa *OrgAssets) ([]*Msg, error) {
@@ -268,35 +280,25 @@ func (b *BroadcastBatch) createMessage(rt *runtime.Runtime, oa *OrgAssets, c *Co
 		return nil, fmt.Errorf("error creating flow contact for broadcast message: %w", err)
 	}
 
-	trans, lang := b.Translations.ForContact(oa.Env(), contact, b.BaseLanguage)
-	if trans == nil {
-		// in theory shoud never happen because we shouldn't save a broadcast like this
-		return nil, errors.New("broadcast has no translation in base language")
-	}
+	content, locale := b.Translations.ForContact(oa.Env(), contact, b.BaseLanguage)
 
-	text := trans.Text
-	attachments := trans.Attachments
-	quickReplies := trans.QuickReplies
-	locale := i18n.NewLocale(lang, i18n.NilCountry)
-
-	if b.TemplateState == TemplateStateUnevaluated {
-		// build up the minimum viable context for templates
-		templateCtx := types.NewXObject(map[string]types.XValue{
+	var expressionsContext *types.XObject
+	if b.Expressions {
+		expressionsContext = types.NewXObject(map[string]types.XValue{
 			"contact": flows.Context(oa.Env(), contact),
 			"fields":  flows.Context(oa.Env(), contact.Fields()),
 			"globals": flows.Context(oa.Env(), oa.SessionAssets().Globals()),
 			"urns":    flows.ContextFunc(oa.Env(), contact.URNs().MapContext),
 		})
-		text, _, _ = goflow.Engine(rt).Evaluator().Template(oa.Env(), templateCtx, text, nil)
 	}
 
 	// don't create a message if we have no content
-	if text == "" && len(attachments) == 0 && len(trans.QuickReplies) == 0 {
+	if content.Empty() {
 		return nil, nil
 	}
 
 	// create our outgoing message
-	out, ch := NewMsgOut(oa, contact, text, attachments, quickReplies, locale)
+	out, ch := CreateMsgOut(rt, oa, contact, content, b.TemplateID, b.TemplateVariables, locale, expressionsContext)
 
 	msg, err := NewOutgoingBroadcastMsg(rt, oa.Org(), ch, contact, out, b)
 	if err != nil {

@@ -21,7 +21,6 @@ var Admin = &User{3, "admin1@nyaruka.com"}
 var Editor = &User{4, "editor1@nyaruka.com"}
 var Viewer = &User{5, "viewer1@nyaruka.com"}
 var Agent = &User{6, "agent1@nyaruka.com"}
-var Surveyor = &User{7, "surveyor1@nyaruka.com"}
 
 var TwilioChannel = &Channel{10000, "74729f45-7f29-4868-9dc4-90e491e3c7d8", "T"}
 var VonageChannel = &Channel{10001, "19012bfd-3ce3-4cae-9bb9-76cf92c73d49", "NX"}
@@ -59,6 +58,9 @@ var TestersGroup = &Group{10001, "5e9d8fab-5e7e-4f51-b533-261af5dea70d"}
 
 var ReportingLabel = &Label{10000, "ebc4dedc-91c4-4ed4-9dd6-daa05ea82698"}
 var TestingLabel = &Label{10001, "a6338cdc-7938-4437-8b05-2d5d785e3a08"}
+
+var ReviveTemplate = &Template{10000, "9c22b594-fcab-4b29-9bcb-ce4404894a80"}
+var GoodbyeTemplate = &Template{10001, "3b8dd151-1a91-411f-90cb-dd9065bb7a71"}
 
 var DefaultTopic = &Topic{1, "fd18a69d-7514-4b76-9fad-072641995e17"}
 var SalesTopic = &Topic{2, "9ef2ff21-064a-41f1-8560-ccc990b4f937"}

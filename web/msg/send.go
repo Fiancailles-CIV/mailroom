@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/goflow/utils"
 	"github.com/nyaruka/mailroom/core/models"
 	"github.com/nyaruka/mailroom/core/msgio"
@@ -52,7 +53,9 @@ func handleSend(ctx context.Context, rt *runtime.Runtime, r *sendRequest) (any, 
 		return nil, 0, fmt.Errorf("error creating flow contact: %w", err)
 	}
 
-	out, ch := models.NewMsgOut(oa, contact, r.Text, r.Attachments, nil, contact.Locale(oa.Env()))
+	content := &flows.MsgContent{Text: r.Text, Attachments: r.Attachments}
+
+	out, ch := models.CreateMsgOut(rt, oa, contact, content, models.NilTemplateID, nil, contact.Locale(oa.Env()), nil)
 	var msg *models.Msg
 
 	if r.TicketID != models.NilTicketID {
@@ -77,7 +80,7 @@ func handleSend(ctx context.Context, rt *runtime.Runtime, r *sendRequest) (any, 
 		}
 	}
 
-	msgio.QueueMessages(ctx, rt, rt.DB, nil, []*models.Msg{msg})
+	msgio.QueueMessages(ctx, rt, rt.DB, []*models.Msg{msg})
 
 	return map[string]any{
 		"id":          msg.ID(),

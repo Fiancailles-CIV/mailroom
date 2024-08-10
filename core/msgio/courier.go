@@ -53,6 +53,7 @@ type FlowRef struct {
 
 type Templating struct {
 	*flows.MsgTemplating
+	Namespace  string `json:"namespace"`
 	ExternalID string `json:"external_id"`
 	Language   string `json:"language"`
 }
@@ -141,10 +142,11 @@ func NewCourierMsg(oa *models.OrgAssets, m *models.Msg, u *models.ContactURN, ch
 	if m.Templating() != nil {
 		tpl := oa.TemplateByUUID(m.Templating().Template.UUID)
 		if tpl != nil {
-			tt := tpl.FindTranslation(m.Locale())
+			tt := tpl.FindTranslation(ch, m.Locale())
 			if tt != nil {
 				msg.Templating = &Templating{
 					MsgTemplating: m.Templating().MsgTemplating,
+					Namespace:     tt.Namespace(),
 					ExternalID:    tt.ExternalID(),
 					Language:      tt.ExternalLocale(), // i.e. en_US
 				}
@@ -152,7 +154,7 @@ func NewCourierMsg(oa *models.OrgAssets, m *models.Msg, u *models.ContactURN, ch
 		}
 	}
 
-	if m.Contact != nil {
+	if m.Contact != nil && m.Contact.LastSeenOn() != nil {
 		msg.ContactLastSeenOn = m.Contact.LastSeenOn()
 	}
 

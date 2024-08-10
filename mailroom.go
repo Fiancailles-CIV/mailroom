@@ -8,15 +8,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/appleboy/go-fcm"
+	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/jmoiron/sqlx"
 	"github.com/nyaruka/gocommon/analytics"
-	"github.com/nyaruka/gocommon/storage"
+	"github.com/nyaruka/gocommon/s3x"
 	"github.com/nyaruka/mailroom/core/tasks"
 	"github.com/nyaruka/mailroom/runtime"
 	"github.com/nyaruka/mailroom/web"
 	"github.com/nyaruka/redisx"
-	"github.com/olivere/elastic/v7"
 )
 
 // Mailroom is a service for handling RapidPro events
@@ -82,60 +82,44 @@ func (mr *Mailroom) Start() error {
 		log.Info("redis ok")
 	}
 
-	// create our storage (S3 or file system)
-	if mr.rt.Config.AWSAccessKeyID != "" || mr.rt.Config.AWSUseCredChain {
-		s3config := &storage.S3Options{
-			Endpoint:       c.S3Endpoint,
-			Region:         c.S3Region,
-			DisableSSL:     c.S3DisableSSL,
-			ForcePathStyle: c.S3ForcePathStyle,
-			MaxRetries:     3,
-		}
-		if mr.rt.Config.AWSAccessKeyID != "" && !mr.rt.Config.AWSUseCredChain {
-			s3config.AWSAccessKeyID = c.AWSAccessKeyID
-			s3config.AWSSecretAccessKey = c.AWSSecretAccessKey
-		}
-		s3Client, err := storage.NewS3Client(s3config)
+	if c.AndroidCredentialsFile != "" {
+		mr.rt.FCM, err = fcm.NewClient(mr.ctx, fcm.WithCredentialsFile(c.AndroidCredentialsFile))
 		if err != nil {
-			return err
+			log.Error("unable to create FCM client", "error", err)
 		}
-		mr.rt.AttachmentStorage = storage.NewS3(s3Client, mr.rt.Config.S3AttachmentsBucket, c.S3Region, s3.BucketCannedACLPublicRead, 32)
-		mr.rt.SessionStorage = storage.NewS3(s3Client, mr.rt.Config.S3SessionsBucket, c.S3Region, s3.ObjectCannedACLPrivate, 32)
-		mr.rt.LogStorage = storage.NewS3(s3Client, mr.rt.Config.S3LogsBucket, c.S3Region, s3.ObjectCannedACLPrivate, 32)
 	} else {
-		mr.rt.AttachmentStorage = storage.NewFS("_storage/attachments", 0766)
-		mr.rt.SessionStorage = storage.NewFS("_storage/sessions", 0766)
-		mr.rt.LogStorage = storage.NewFS("_storage/logs", 0766)
+		log.Warn("fcm not configured, no android syncing")
 	}
 
-	// check our storages
-	if err := checkStorage(mr.rt.AttachmentStorage); err != nil {
-		log.Error(mr.rt.AttachmentStorage.Name()+" attachment storage not available", "error", err)
-	} else {
-		log.Info(mr.rt.AttachmentStorage.Name() + " attachment storage ok")
+	// setup S3 storage
+	mr.rt.S3, err = s3x.NewService(c.AWSAccessKeyID, c.AWSSecretAccessKey, c.AWSRegion, c.S3Endpoint, c.S3Minio)
+	if err != nil {
+		return err
 	}
-	if err := checkStorage(mr.rt.SessionStorage); err != nil {
-		log.Error(mr.rt.SessionStorage.Name()+" session storage not available", "error", err)
+
+	// check buckets
+	if err := mr.rt.S3.Test(mr.ctx, c.S3AttachmentsBucket); err != nil {
+		log.Error("attachments bucket not accessible", "error", err)
 	} else {
-		log.Info(mr.rt.SessionStorage.Name() + " session storage ok")
+		log.Info("attachments bucket ok")
 	}
-	if err := checkStorage(mr.rt.LogStorage); err != nil {
-		log.Error(mr.rt.LogStorage.Name()+" log storage not available", "error", err)
+	if err := mr.rt.S3.Test(mr.ctx, c.S3SessionsBucket); err != nil {
+		log.Error("sessions bucket not accessible", "error", err)
 	} else {
-		log.Info(mr.rt.LogStorage.Name() + " log storage ok")
+		log.Info("sessions bucket ok")
+	}
+	if err := mr.rt.S3.Test(mr.ctx, c.S3LogsBucket); err != nil {
+		log.Error("logs bucket not accessible", "error", err)
+	} else {
+		log.Info("logs bucket ok")
 	}
 
 	// initialize our elastic client
-	mr.rt.ES, err = newElasticClient(c.Elastic, c.ElasticUsername, c.ElasticPassword)
+	mr.rt.ES, err = elasticsearch.NewTypedClient(elasticsearch.Config{Addresses: []string{c.Elastic}, Username: c.ElasticUsername, Password: c.ElasticPassword})
 	if err != nil {
 		log.Error("elastic search not available", "error", err)
 	} else {
 		log.Info("elastic ok")
-	}
-
-	// warn if we won't be doing FCM syncing
-	if c.FCMKey == "" {
-		log.Warn("fcm not configured, no android syncing")
 	}
 
 	// if we have a librato token, configure it
@@ -176,11 +160,6 @@ func (mr *Mailroom) Stop() error {
 
 	mr.wg.Wait()
 
-	// stop ES client if we have one
-	if mr.rt.ES != nil {
-		mr.rt.ES.Stop()
-	}
-
 	log.Info("mailroom stopped")
 	return nil
 }
@@ -202,25 +181,4 @@ func openAndCheckDBConnection(url string, maxOpenConns int) (*sql.DB, *sqlx.DB, 
 	cancel()
 
 	return db.DB, db, err
-}
-
-func newElasticClient(url string, username string, password string) (*elastic.Client, error) {
-	// enable retrying
-	backoff := elastic.NewSimpleBackoff(500, 1000, 2000)
-	backoff.Jitter(true)
-	retrier := elastic.NewBackoffRetrier(backoff)
-
-	return elastic.NewClient(
-		elastic.SetURL(url),
-		elastic.SetSniff(false),
-		elastic.SetRetrier(retrier),
-		elastic.SetBasicAuth(username, password),
-	)
-}
-
-func checkStorage(s storage.Storage) error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	err := s.Test(ctx)
-	cancel()
-	return err
 }

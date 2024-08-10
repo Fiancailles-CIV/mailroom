@@ -20,8 +20,10 @@ import (
 	"github.com/nyaruka/gocommon/urns"
 	"github.com/nyaruka/gocommon/uuids"
 	"github.com/nyaruka/goflow/assets"
+	"github.com/nyaruka/goflow/excellent/types"
 	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/goflow/utils"
+	"github.com/nyaruka/mailroom/core/goflow"
 	"github.com/nyaruka/mailroom/runtime"
 	"github.com/nyaruka/null/v3"
 )
@@ -96,7 +98,7 @@ type Templating struct {
 	*flows.MsgTemplating
 }
 
-// Scan supports reading translation values from JSON in database
+// Scan supports reading templating values from JSON in database
 func (t *Templating) Scan(value any) error {
 	if value == nil {
 		return nil
@@ -141,6 +143,7 @@ type Msg struct {
 		Direction    MsgDirection  `db:"direction"`
 		Status       MsgStatus     `db:"status"`
 		Visibility   MsgVisibility `db:"visibility"`
+		IsAndroid    bool          `db:"is_android"`
 		MsgType      MsgType       `db:"msg_type"`
 		MsgCount     int           `db:"msg_count"`
 		CreatedOn    time.Time     `db:"created_on"`
@@ -200,8 +203,10 @@ func (m *Msg) ContactURNID() *URNID { return m.m.ContactURNID }
 func (m *Msg) SetChannel(channel *Channel) {
 	if channel != nil {
 		m.m.ChannelID = channel.ID()
+		m.m.IsAndroid = channel.IsAndroid()
 	} else {
 		m.m.ChannelID = NilChannelID
+		m.m.IsAndroid = false
 	}
 }
 
@@ -235,7 +240,7 @@ func (m *Msg) Attachments() []utils.Attachment {
 func NewIncomingAndroid(orgID OrgID, channelID ChannelID, contactID ContactID, urnID URNID, text string, receivedOn time.Time) *Msg {
 	msg := &Msg{}
 	m := &msg.m
-	m.UUID = flows.MsgUUID(uuids.New())
+	m.UUID = flows.MsgUUID(uuids.NewV4())
 	m.OrgID = orgID
 	m.ChannelID = channelID
 	m.ContactID = contactID
@@ -245,6 +250,7 @@ func NewIncomingAndroid(orgID OrgID, channelID ChannelID, contactID ContactID, u
 	m.Status = MsgStatusPending
 	m.Visibility = VisibilityVisible
 	m.MsgType = MsgTypeText
+	m.IsAndroid = true
 	m.CreatedOn = dates.Now()
 	m.SentOn = &receivedOn
 	return msg
@@ -315,7 +321,7 @@ func NewOutgoingIVR(cfg *runtime.Config, orgID OrgID, call *Call, out *flows.Msg
 func NewOutgoingOptInMsg(rt *runtime.Runtime, session *Session, flow *Flow, optIn *OptIn, channel *Channel, urn urns.URN, createdOn time.Time) *Msg {
 	msg := &Msg{}
 	m := &msg.m
-	m.UUID = flows.MsgUUID(uuids.New())
+	m.UUID = flows.MsgUUID(uuids.NewV4())
 	m.OrgID = session.OrgID()
 	m.ContactID = session.ContactID()
 	m.HighPriority = session.IncomingMsgID() != NilMsgID
@@ -616,10 +622,10 @@ func InsertMessages(ctx context.Context, tx DBorTx, msgs []*Msg) error {
 const sqlInsertMsgSQL = `
 INSERT INTO
 msgs_msg(uuid, text, attachments, quick_replies, locale, templating, high_priority, created_on, modified_on, sent_on, direction, status, metadata,
-		 visibility, msg_type, msg_count, error_count, next_attempt, failed_reason, channel_id,
+		 visibility, msg_type, msg_count, error_count, next_attempt, failed_reason, channel_id, is_android,
 		 contact_id, contact_urn_id, org_id, flow_id, broadcast_id, ticket_id, optin_id, created_by_id)
   VALUES(:uuid, :text, :attachments, :quick_replies, :locale, :templating, :high_priority, :created_on, now(), :sent_on, :direction, :status, :metadata,
-		 :visibility, :msg_type, :msg_count, :error_count, :next_attempt, :failed_reason, :channel_id,
+		 :visibility, :msg_type, :msg_count, :error_count, :next_attempt, :failed_reason, :channel_id, :is_android,
 		 :contact_id, :contact_urn_id, :org_id, :flow_id, :broadcast_id, :ticket_id, :optin_id, :created_by_id)
 RETURNING id, modified_on`
 
@@ -770,7 +776,8 @@ func FailChannelMessages(ctx context.Context, db *sql.DB, orgID OrgID, channelID
 	return nil
 }
 
-func NewMsgOut(oa *OrgAssets, c *flows.Contact, text string, atts []utils.Attachment, qrs []string, locale i18n.Locale) (*flows.MsgOut, *Channel) {
+// CreateMsgOut creates a new outgoing message to the given contact, resolving the destination etc
+func CreateMsgOut(rt *runtime.Runtime, oa *OrgAssets, c *flows.Contact, content *flows.MsgContent, templateID TemplateID, templateVariables []string, locale i18n.Locale, expressionsContext *types.XObject) (*flows.MsgOut, *Channel) {
 	// resolve URN + channel for this contact
 	urn := urns.NilURN
 	var channel *Channel
@@ -782,6 +789,51 @@ func NewMsgOut(oa *OrgAssets, c *flows.Contact, text string, atts []utils.Attach
 		break
 	}
 
+	// if there's an expressions context, evaluate text etc
+	if expressionsContext != nil {
+		ev := goflow.Engine(rt).Evaluator()
+
+		content.Text, _, _ = ev.Template(oa.Env(), expressionsContext, content.Text, nil)
+
+		for i := range content.Attachments {
+			evaluated, _, _ := ev.Template(oa.Env(), expressionsContext, string(content.Attachments[i]), nil)
+			content.Attachments[i] = utils.Attachment(evaluated)
+		}
+		for i := range content.QuickReplies {
+			content.QuickReplies[i], _, _ = ev.Template(oa.Env(), expressionsContext, content.QuickReplies[i], nil)
+		}
+		for i := range templateVariables {
+			templateVariables[i], _, _ = ev.Template(oa.Env(), expressionsContext, templateVariables[i], nil)
+		}
+	}
+
+	// if we have a template, try to generate templating
+	var templating *flows.MsgTemplating
+	if templateID != NilTemplateID && channel != nil {
+		template := oa.TemplateByID(templateID)
+		if template != nil {
+			flowTemplate := flows.NewTemplate(template)
+			flowChannel := flows.NewChannel(channel)
+
+			// look for a translation in the contact's locale, or the org's default locale
+			locales := make([]i18n.Locale, 0, 2)
+			if c.Language() != "" {
+				locales = append(locales, c.Locale(oa.Env()))
+			}
+			locales = append(locales, oa.Env().DefaultLocale())
+
+			trans := flowTemplate.FindTranslation(flowChannel, locales)
+			if trans != nil {
+				translation := flows.NewTemplateTranslation(trans)
+				templating = flows.NewTemplate(template).Templating(translation, templateVariables)
+
+				// override message content to be a preview of template message and override locale to match the template translation
+				content = translation.Preview(templating.Variables)
+				locale = translation.Locale()
+			}
+		}
+	}
+
 	// is this message sendable?
 	unsendableReason := flows.NilUnsendableReason
 	if c.Status() != flows.ContactStatusActive {
@@ -790,7 +842,7 @@ func NewMsgOut(oa *OrgAssets, c *flows.Contact, text string, atts []utils.Attach
 		unsendableReason = flows.UnsendableReasonNoDestination
 	}
 
-	return flows.NewMsgOut(urn, channelRef, text, atts, qrs, nil, flows.NilMsgTopic, locale, unsendableReason), channel
+	return flows.NewMsgOut(urn, channelRef, content, templating, flows.NilMsgTopic, locale, unsendableReason), channel
 }
 
 const sqlUpdateMsgDeletedBySender = `

@@ -8,14 +8,15 @@ import (
 	"os/exec"
 	"path"
 
+	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/gomodule/redigo/redis"
 	"github.com/jmoiron/sqlx"
-	"github.com/nyaruka/gocommon/storage"
+	"github.com/nyaruka/gocommon/s3x"
 	"github.com/nyaruka/mailroom/core/models"
 	"github.com/nyaruka/mailroom/runtime"
 	"github.com/nyaruka/redisx/assertredis"
 	"github.com/nyaruka/rp-indexer/v9/indexers"
-	"github.com/olivere/elastic/v7"
+	"golang.org/x/exp/maps"
 )
 
 var _db *sqlx.DB
@@ -23,10 +24,6 @@ var _db *sqlx.DB
 const elasticURL = "http://localhost:9200"
 const elasticContactsIndex = "test_contacts"
 const postgresContainerName = "textit-postgres-1"
-
-const attachmentStorageDir = "_test_attachments_storage"
-const sessionStorageDir = "_test_session_storage"
-const logStorageDir = "_test_log_storage"
 
 // Refresh is our type for the pieces of org assets we want fresh (not cached)
 type ResetFlag int
@@ -43,7 +40,7 @@ const (
 
 // Reset clears out both our database and redis DB
 func Reset(what ResetFlag) {
-	ctx := context.TODO()
+	ctx, rt := Runtime() // TODO pass rt from test?
 
 	if what&ResetDB > 0 {
 		resetDB()
@@ -54,10 +51,10 @@ func Reset(what ResetFlag) {
 		resetRedis()
 	}
 	if what&ResetStorage > 0 {
-		resetStorage()
+		resetStorage(ctx, rt)
 	}
 	if what&ResetElastic > 0 {
-		resetElastic(ctx)
+		resetElastic(ctx, rt)
 	}
 
 	models.FlushCache()
@@ -65,25 +62,29 @@ func Reset(what ResetFlag) {
 
 // Runtime returns the various runtime things a test might need
 func Runtime() (context.Context, *runtime.Runtime) {
-	es, err := elastic.NewSimpleClient(elastic.SetURL(elasticURL), elastic.SetSniff(false), elastic.SetTraceLog(&elasticLog{}))
-	if err != nil {
-		panic(err)
-	}
-
 	cfg := runtime.NewDefaultConfig()
-	cfg.ElasticContactsIndex = elasticContactsIndex
 	cfg.Port = 8091
+	cfg.ElasticContactsIndex = elasticContactsIndex
+	cfg.AWSAccessKeyID = "root"
+	cfg.AWSSecretAccessKey = "tembatemba"
+	cfg.S3Endpoint = "http://localhost:9000"
+	cfg.S3AttachmentsBucket = "test-attachments"
+	cfg.S3SessionsBucket = "test-sessions"
+	cfg.S3LogsBucket = "test-logs"
+	cfg.S3Minio = true
+
+	s3svc, err := s3x.NewService(cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey, cfg.AWSRegion, cfg.S3Endpoint, cfg.S3Minio)
+	noError(err)
 
 	dbx := getDB()
 	rt := &runtime.Runtime{
-		DB:                dbx,
-		ReadonlyDB:        dbx.DB,
-		RP:                getRP(),
-		ES:                es,
-		AttachmentStorage: storage.NewFS(attachmentStorageDir, 0766),
-		SessionStorage:    storage.NewFS(sessionStorageDir, 0766),
-		LogStorage:        storage.NewFS(logStorageDir, 0766),
-		Config:            cfg,
+		DB:         dbx,
+		ReadonlyDB: dbx.DB,
+		RP:         getRP(),
+		ES:         getES(),
+		S3:         s3svc,
+		FCM:        &MockFCMClient{ValidTokens: []string{"FCMID3", "FCMID4", "FCMID5"}},
+		Config:     cfg,
 	}
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
@@ -99,21 +100,8 @@ func ReindexElastic(ctx context.Context) {
 	contactsIndexer := indexers.NewContactIndexer(elasticURL, elasticContactsIndex, 1, 1, 100)
 	contactsIndexer.Index(db.DB, false, false)
 
-	es.Refresh(elasticContactsIndex).Do(ctx)
-}
-
-type elasticLog struct{}
-
-func (*elasticLog) Printf(format string, v ...interface{}) {
-	if traceElastic {
-		fmt.Printf(format, v...)
-	}
-}
-
-var traceElastic = false
-
-func TraceElastic(enable bool) {
-	traceElastic = enable
+	_, err := es.Indices.Refresh().Index(elasticContactsIndex).Do(ctx)
+	noError(err)
 }
 
 // returns an open test database pool
@@ -146,8 +134,8 @@ func getRC() redis.Conn {
 }
 
 // returns an Elastic client
-func getES() *elastic.Client {
-	es, err := elastic.NewSimpleClient(elastic.SetURL(elasticURL), elastic.SetSniff(false))
+func getES() *elasticsearch.TypedClient {
+	es, err := elasticsearch.NewTypedClient(elasticsearch.Config{Addresses: []string{elasticURL}})
 	noError(err)
 	return es
 }
@@ -207,28 +195,25 @@ func resetRedis() {
 	assertredis.FlushDB()
 }
 
-// clears our storage for tests
-func resetStorage() {
-	must(os.RemoveAll(attachmentStorageDir))
-	must(os.RemoveAll(sessionStorageDir))
-	must(os.RemoveAll(logStorageDir))
+func resetStorage(ctx context.Context, rt *runtime.Runtime) {
+	rt.S3.EmptyBucket(ctx, rt.Config.S3AttachmentsBucket)
+	rt.S3.EmptyBucket(ctx, rt.Config.S3SessionsBucket)
+	rt.S3.EmptyBucket(ctx, rt.Config.S3LogsBucket)
 }
 
 // clears indexed data in Elastic
-func resetElastic(ctx context.Context) {
-	es := getES()
-
-	exists, err := es.IndexExists(elasticContactsIndex).Do(ctx)
+func resetElastic(ctx context.Context, rt *runtime.Runtime) {
+	exists, err := rt.ES.Indices.ExistsAlias(elasticContactsIndex).Do(ctx)
 	noError(err)
 
 	if exists {
 		// get any indexes for the contacts alias
-		ar, err := es.Aliases().Index(elasticContactsIndex).Do(ctx)
+		ar, err := rt.ES.Indices.GetAlias().Name(elasticContactsIndex).Do(ctx)
 		noError(err)
 
 		// and delete them
-		for _, index := range ar.IndicesByAlias(elasticContactsIndex) {
-			_, err := es.DeleteIndex(index).Do(ctx)
+		for _, index := range maps.Keys(ar) {
+			_, err := rt.ES.Indices.Delete(index).Do(ctx)
 			noError(err)
 		}
 	}
@@ -251,6 +236,7 @@ DELETE FROM triggers_trigger_contacts WHERE trigger_id >= 30000;
 DELETE FROM triggers_trigger_groups WHERE trigger_id >= 30000;
 DELETE FROM triggers_trigger_exclude_groups WHERE trigger_id >= 30000;
 DELETE FROM triggers_trigger WHERE id >= 30000;
+DELETE FROM channels_channel WHERE id >= 30000;
 DELETE FROM channels_channelcount;
 DELETE FROM channels_channelevent;
 DELETE FROM msgs_msg;
@@ -274,6 +260,8 @@ DELETE FROM msgs_broadcast_contacts;
 DELETE FROM msgs_broadcastmsgcount;
 DELETE FROM msgs_broadcast;
 DELETE FROM msgs_optin;
+DELETE FROM templates_templatetranslation WHERE id >= 30000;
+DELETE FROM templates_template WHERE id >= 30000;
 DELETE FROM schedules_schedule;
 DELETE FROM campaigns_campaignevent WHERE id >= 30000;
 DELETE FROM campaigns_campaign WHERE id >= 30000;

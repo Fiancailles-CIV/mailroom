@@ -474,7 +474,7 @@ func TestClearWaitTimeout(t *testing.T) {
 	timeoutOn := time.Now().Add(time.Minute)
 	testdata.InsertWaitingSession(rt, testdata.Org1, testdata.Cathy, models.FlowTypeMessaging, testdata.Favorites, models.NilCallID, time.Now(), expiresOn, true, &timeoutOn)
 
-	session, err := models.FindWaitingSessionForContact(ctx, rt.DB, nil, oa, models.FlowTypeMessaging, cathy)
+	session, err := models.FindWaitingSessionForContact(ctx, rt, oa, models.FlowTypeMessaging, cathy)
 	require.NoError(t, err)
 
 	// can be called without db connection to clear without updating db
@@ -492,7 +492,7 @@ func TestClearWaitTimeout(t *testing.T) {
 func insertSessionAndRun(rt *runtime.Runtime, contact *testdata.Contact, sessionType models.FlowType, status models.SessionStatus, flow *testdata.Flow, connID models.CallID) (models.SessionID, models.FlowRunID) {
 	// create session and add a run with same status
 	sessionID := testdata.InsertFlowSession(rt, testdata.Org1, contact, sessionType, status, flow, connID)
-	runID := testdata.InsertFlowRun(rt, testdata.Org1, sessionID, contact, flow, models.RunStatus(status))
+	runID := testdata.InsertFlowRun(rt, testdata.Org1, sessionID, contact, flow, models.RunStatus(status), "")
 
 	// mark contact as being in that flow
 	rt.DB.MustExec(`UPDATE contacts_contact SET current_flow_id = $2 WHERE id = $1`, contact.ID, flow.ID)

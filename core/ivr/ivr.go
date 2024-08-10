@@ -410,7 +410,7 @@ func ResumeIVRFlow(
 		return fmt.Errorf("error creating flow contact: %w", err)
 	}
 
-	session, err := models.FindWaitingSessionForContact(ctx, rt.DB, rt.SessionStorage, oa, models.FlowTypeVoice, contact)
+	session, err := models.FindWaitingSessionForContact(ctx, rt, oa, models.FlowTypeVoice, contact)
 	if err != nil {
 		return fmt.Errorf("error loading session for contact: %w", err)
 	}
@@ -531,7 +531,7 @@ func buildMsgResume(
 	svc Service, channel *models.Channel, contact *flows.Contact, urn urns.URN,
 	call *models.Call, oa *models.OrgAssets, r *http.Request, resume InputResume) (flows.Resume, error, error) {
 	// our msg UUID
-	msgUUID := flows.MsgUUID(uuids.New())
+	msgUUID := flows.MsgUUID(uuids.NewV4())
 
 	// we have an attachment, download it locally
 	if resume.Attachment != NilAttachment {
