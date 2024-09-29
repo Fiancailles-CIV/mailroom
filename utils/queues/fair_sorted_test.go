@@ -42,6 +42,12 @@ func TestQueues(t *testing.T) {
 		assert.Equal(t, expecting, size)
 	}
 
+	assertOwners := func(expected []int) {
+		actual, err := q.Owners(rc)
+		assert.NoError(t, err)
+		assert.ElementsMatch(t, expected, actual)
+	}
+
 	assertSize(0)
 
 	q.Push(rc, "type1", 1, "task1", queues.DefaultPriority)
@@ -72,6 +78,7 @@ func TestQueues(t *testing.T) {
 	assertPop(1, `"task1"`)
 	assertredis.ZGetAll(t, rc, "test:active", map[string]float64{"1": 2, "2": 1})
 
+	assertOwners([]int{1, 2})
 	assertSize(2)
 
 	// mark task2 and task1 (owner 1) as complete
@@ -88,7 +95,37 @@ func TestQueues(t *testing.T) {
 
 	assertredis.ZGetAll(t, rc, "test:active", map[string]float64{})
 
-	//  if we somehow get into a state where an owner is in the active set but doesn't have queued tasks, pop will retry
+	q.Push(rc, "type1", 1, "task6", queues.DefaultPriority)
+	q.Push(rc, "type1", 1, "task7", queues.DefaultPriority)
+	q.Push(rc, "type1", 2, "task8", queues.DefaultPriority)
+	q.Push(rc, "type1", 2, "task9", queues.DefaultPriority)
+
+	assertPop(1, `"task6"`)
+
+	q.Pause(rc, 1)
+	q.Pause(rc, 1) // no-op if already paused
+
+	assertredis.ZGetAll(t, rc, "test:active", map[string]float64{"1": 1000001, "2": 0})
+	assertOwners([]int{1, 2})
+
+	assertPop(2, `"task8"`)
+	assertPop(2, `"task9"`)
+	assertPop(0, "") // no more tasks
+
+	q.Resume(rc, 1)
+	q.Resume(rc, 1) // no-op if already active
+
+	assertredis.ZGetAll(t, rc, "test:active", map[string]float64{"1": 1})
+	assertOwners([]int{1})
+
+	assertPop(1, `"task7"`)
+
+	q.Done(rc, 1)
+	q.Done(rc, 1)
+	q.Done(rc, 2)
+	q.Done(rc, 2)
+
+	// if we somehow get into a state where an owner is in the active set but doesn't have queued tasks, pop will retry
 	q.Push(rc, "type1", 1, "task6", queues.DefaultPriority)
 	q.Push(rc, "type1", 2, "task7", queues.DefaultPriority)
 

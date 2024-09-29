@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/nyaruka/goflow/contactql"
@@ -46,9 +47,7 @@ func (t *SendBroadcastTask) WithAssets() models.Refresh {
 // Perform handles sending the broadcast by creating batches of broadcast sends for all the unique contacts
 func (t *SendBroadcastTask) Perform(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets) error {
 	if err := createBroadcastBatches(ctx, rt, oa, t.Broadcast); err != nil {
-		if t.Broadcast.ID != models.NilBroadcastID {
-			models.MarkBroadcastFailed(ctx, rt.DB, t.Broadcast.ID)
-		}
+		t.Broadcast.SetFailed(ctx, rt.DB)
 
 		// if error is user created query error.. don't escalate error to sentry
 		isQueryError, _ := contactql.IsQueryError(err)
@@ -83,20 +82,27 @@ func createBroadcastBatches(ctx context.Context, rt *runtime.Runtime, oa *models
 		contactIDs = append(contactIDs, nodeContactIDs...)
 	}
 
+	// mark our broadcast as queued
+	if err := bcast.SetQueued(ctx, rt.DB, len(contactIDs)); err != nil {
+		return fmt.Errorf("error marking broadcast as queued: %w", err)
+	}
+
 	// if there are no contacts to send to, mark our broadcast as sent, we are done
 	if len(contactIDs) == 0 {
-		if bcast.ID != models.NilBroadcastID {
-			err = models.MarkBroadcastSent(ctx, rt.DB, bcast.ID)
-			if err != nil {
-				return fmt.Errorf("error marking broadcast as sent: %w", err)
-			}
+		if err := bcast.SetCompleted(ctx, rt.DB); err != nil {
+			return fmt.Errorf("error marking broadcast as sent: %w", err)
 		}
 		return nil
 	}
 
-	// two or fewer contacts? queue to our handler queue for sending
-	q := tasks.BatchQueue
-	if len(contactIDs) <= 2 {
+	// TODO remove once we decide whether to not add an actual limit
+	if bcast.ID == models.NilBroadcastID && len(contactIDs) > 100 {
+		slog.Error("non-persistent broadcast to more than 100 contacts", "count", len(contactIDs), "org_id", bcast.OrgID)
+	}
+
+	// batches will be processed in the throttled queue unless we're a single contact
+	q := tasks.ThrottledQueue
+	if len(contactIDs) == 1 {
 		q = tasks.HandlerQueue
 	}
 
@@ -104,11 +110,12 @@ func createBroadcastBatches(ctx context.Context, rt *runtime.Runtime, oa *models
 	defer rc.Close()
 
 	// create tasks for batches of contacts
-	idBatches := models.ChunkSlice(contactIDs, startBatchSize)
+	idBatches := slices.Collect(slices.Chunk(contactIDs, startBatchSize))
 	for i, idBatch := range idBatches {
+		isFirst := (i == 0)
 		isLast := (i == len(idBatches)-1)
 
-		batch := bcast.CreateBatch(idBatch, isLast)
+		batch := bcast.CreateBatch(idBatch, isFirst, isLast)
 		err = tasks.Queue(rc, q, bcast.OrgID, &SendBroadcastBatchTask{BroadcastBatch: batch}, queues.DefaultPriority)
 		if err != nil {
 			if i == 0 {

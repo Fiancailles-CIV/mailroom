@@ -25,6 +25,7 @@ import (
 	"github.com/nyaruka/goflow/utils"
 	"github.com/nyaruka/mailroom/core/goflow"
 	"github.com/nyaruka/mailroom/runtime"
+	"github.com/nyaruka/mailroom/utils/clogs"
 	"github.com/nyaruka/null/v3"
 )
 
@@ -354,8 +355,8 @@ func NewOutgoingFlowMsg(rt *runtime.Runtime, org *Org, channel *Channel, session
 }
 
 // NewOutgoingBroadcastMsg creates an outgoing message which is part of a broadcast
-func NewOutgoingBroadcastMsg(rt *runtime.Runtime, org *Org, channel *Channel, contact *flows.Contact, out *flows.MsgOut, bb *BroadcastBatch) (*Msg, error) {
-	return newOutgoingTextMsg(rt, org, channel, contact, out, nil, nil, bb.BroadcastID, NilTicketID, bb.OptInID, bb.CreatedByID, dates.Now())
+func NewOutgoingBroadcastMsg(rt *runtime.Runtime, org *Org, channel *Channel, contact *flows.Contact, out *flows.MsgOut, b *Broadcast) (*Msg, error) {
+	return newOutgoingTextMsg(rt, org, channel, contact, out, nil, nil, b.ID, NilTicketID, b.OptInID, b.CreatedByID, dates.Now())
 }
 
 // NewOutgoingTicketMsg creates an outgoing message from a ticket
@@ -389,6 +390,13 @@ func newOutgoingTextMsg(rt *runtime.Runtime, org *Org, channel *Channel, contact
 	m.CreatedByID = userID
 	m.CreatedOn = createdOn
 	m.Metadata = null.Map[any](buildMsgMetadata(out))
+
+	// TODO: temporary fix for invalid locales
+	if len(m.Locale) > 6 {
+		slog.Error("invalid locale, defaulting to eng-US", "locale", m.Locale)
+
+		m.Locale = "eng"
+	}
 
 	if out.Templating() != nil {
 		m.Templating = &Templating{MsgTemplating: out.Templating()}
@@ -630,7 +638,7 @@ msgs_msg(uuid, text, attachments, quick_replies, locale, templating, high_priori
 RETURNING id, modified_on`
 
 // MarkMessageHandled updates a message after handling
-func MarkMessageHandled(ctx context.Context, tx DBorTx, msgID MsgID, status MsgStatus, visibility MsgVisibility, flowID FlowID, ticketID TicketID, attachments []utils.Attachment, logUUIDs []ChannelLogUUID) error {
+func MarkMessageHandled(ctx context.Context, tx DBorTx, msgID MsgID, status MsgStatus, visibility MsgVisibility, flowID FlowID, ticketID TicketID, attachments []utils.Attachment, logUUIDs []clogs.LogUUID) error {
 	_, err := tx.ExecContext(ctx,
 		`UPDATE msgs_msg SET status = $2, visibility = $3, flow_id = $4, ticket_id = $5, attachments = $6, log_uuids = array_cat(log_uuids, $7) WHERE id = $1`,
 		msgID, status, visibility, flowID, ticketID, pq.Array(attachments), pq.Array(logUUIDs),

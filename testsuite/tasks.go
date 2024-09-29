@@ -38,12 +38,12 @@ func CurrentTasks(t *testing.T, rt *runtime.Runtime, qname string) map[models.Or
 	defer rc.Close()
 
 	// get all active org queues
-	active, err := redis.Ints(rc.Do("ZRANGE", fmt.Sprintf("%s:active", qname), 0, -1))
+	active, err := redis.Ints(rc.Do("ZRANGE", fmt.Sprintf("tasks:%s:active", qname), 0, -1))
 	require.NoError(t, err)
 
 	tasks := make(map[models.OrgID][]*queues.Task)
 	for _, orgID := range active {
-		orgTasksEncoded, err := redis.Strings(rc.Do("ZRANGE", fmt.Sprintf("%s:%d", qname, orgID), 0, -1))
+		orgTasksEncoded, err := redis.Strings(rc.Do("ZRANGE", fmt.Sprintf("tasks:%s:%d", qname, orgID), 0, -1))
 		require.NoError(t, err)
 
 		orgTasks := make([]*queues.Task, len(orgTasksEncoded))
@@ -68,15 +68,17 @@ func FlushTasks(t *testing.T, rt *runtime.Runtime) map[string]int {
 	var err error
 	counts := make(map[string]int)
 
-	for {
-		// look for a task on the handler queue
-		task, err = tasks.HandlerQueue.Pop(rc)
-		require.NoError(t, err)
+	qs := []*queues.FairSorted{tasks.HandlerQueue, tasks.BatchQueue, tasks.ThrottledQueue}
 
-		if task == nil {
-			// look for a task on the batch queue
-			task, err = tasks.BatchQueue.Pop(rc)
+	for {
+		// look for a task in the queues
+		for _, q := range qs {
+			task, err = q.Pop(rc)
 			require.NoError(t, err)
+
+			if task != nil {
+				break
+			}
 		}
 
 		if task == nil { // all done

@@ -9,13 +9,15 @@ import (
 	"log/slog"
 	"net/url"
 	"path"
+	"slices"
+	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/gomodule/redigo/redis"
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
-	"github.com/nyaruka/gocommon/s3x"
+	"github.com/nyaruka/gocommon/aws/s3x"
 	"github.com/nyaruka/gocommon/uuids"
 	"github.com/nyaruka/goflow/assets"
 	"github.com/nyaruka/goflow/envs"
@@ -714,7 +716,7 @@ func InsertSessions(ctx context.Context, rt *runtime.Runtime, tx *sqlx.Tx, oa *O
 	// gather all our pre commit events, group them by hook
 	err = ApplyEventPreCommitHooks(ctx, rt, tx, oa, scenes)
 	if err != nil {
-		return nil, fmt.Errorf("error applying pre commit hook: %T: %w", hook, err)
+		return nil, fmt.Errorf("error applying session pre commit hook: %T: %w", hook, err)
 	}
 
 	// return our session
@@ -781,12 +783,13 @@ func FindWaitingSessionForContact(ctx context.Context, rt *runtime.Runtime, oa *
 		if err != nil {
 			return nil, fmt.Errorf("error parsing output URL: %s: %w", session.OutputURL(), err)
 		}
+		key := strings.TrimPrefix(u.Path, "/")
 
 		start := time.Now()
 
-		_, output, err := rt.S3.GetObject(ctx, rt.Config.S3SessionsBucket, u.Path)
+		_, output, err := rt.S3.GetObject(ctx, rt.Config.S3SessionsBucket, key)
 		if err != nil {
-			return nil, fmt.Errorf("error reading session from storage: %s: %w", session.OutputURL(), err)
+			return nil, fmt.Errorf("error reading session from s3 bucket=%s key=%s: %w", rt.Config.S3SessionsBucket, key, err)
 		}
 
 		slog.Debug("loaded session from storage", "elapsed", time.Since(start), "output_url", session.OutputURL())
@@ -808,7 +811,7 @@ func WriteSessionOutputsToStorage(ctx context.Context, rt *runtime.Runtime, sess
 			Key:         s.StoragePath(),
 			Body:        []byte(s.Output()),
 			ContentType: "application/json",
-			ACL:         s3.ObjectCannedACLPrivate,
+			ACL:         types.ObjectCannedACLPrivate,
 		}
 	}
 
@@ -853,7 +856,7 @@ func ExitSessions(ctx context.Context, db *sqlx.DB, sessionIDs []SessionID, stat
 	}
 
 	// split into batches and exit each batch in a transaction
-	for _, idBatch := range ChunkSlice(sessionIDs, 100) {
+	for idBatch := range slices.Chunk(sessionIDs, 100) {
 		tx, err := db.BeginTxx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("error starting transaction to exit sessions: %w", err)

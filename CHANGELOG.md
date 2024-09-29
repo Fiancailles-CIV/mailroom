@@ -1,3 +1,150 @@
+v9.3.37 (2024-09-26)
+-------------------------
+ * Remove check in deindex contact for contact being inactive.. so that it can be run before deletion actually occurs
+
+v9.3.36 (2024-09-26)
+-------------------------
+ * Add endpoint to de-index specific contacts
+
+v9.3.35 (2024-09-26)
+-------------------------
+ * Add web endpoint to queue org for de-indexing
+
+v9.3.34 (2024-09-25)
+-------------------------
+ * Re-introduce queued status for broadcasts and flow starts
+
+v9.3.33 (2024-09-24)
+-------------------------
+ * Re-evaluate dynamic groups of contacts who have had URNs stolen from them
+ * Remove unused broadcast task fields
+
+v9.3.32 (2024-09-23)
+-------------------------
+ * Fix broadcast endpoint creating broadcasts with empty status
+
+v9.3.31 (2024-09-23)
+-------------------------
+ * Mark broadcasts as started once recipients are known and update contact_count
+ * Fix loading broadcasts from batch tasks
+
+v9.3.30 (2024-09-23)
+-------------------------
+ * Use broadcast field on batch tasks
+
+v9.3.29 (2024-09-22)
+-------------------------
+ * Fix trigger_session actions with IVR flows
+
+v9.3.28 (2024-09-20)
+-------------------------
+ * Add more info to error log when writing ivr channel log fails
+
+v9.3.27 (2024-09-20)
+-------------------------
+ * Add .broadcast field to broadcast batch tasks
+
+v9.3.26 (2024-09-20)
+-------------------------
+ * Add warning for non-persistent broadcasts to more than 100 contacts
+
+v9.3.25 (2024-09-19)
+-------------------------
+ * Stop creating starts in the database for trigger_session flow actions
+ * Use status=(C)OMPLETE for sent broadcasts instead of (S)ENT
+
+v9.3.24 (2024-09-19)
+-------------------------
+ * Rework broadcasts to follow more similar pattern as starts
+ * Add support for non-persisted starts
+
+v9.3.23 (2024-09-18)
+-------------------------
+ * Rework flow start batch processing so that we check the start status in case it's interrupted
+
+v9.3.22 (2024-09-18)
+-------------------------
+ * Change channel log TTL to be 1 week
+ * Stop writing channel logs to S3
+
+v9.3.21 (2024-09-17)
+-------------------------
+ * Update deps including goflow
+
+v9.3.20 (2024-09-16)
+-------------------------
+ * Tweak error messages and add temp workaround for invalid msg locales
+
+v9.3.19 (2024-09-16)
+-------------------------
+ * Rework clogs util package based on latest gocommon
+ * Fix error handling on contact batch import
+
+v9.3.18 (2024-09-16)
+-------------------------
+ * Rework clogs package to provide get/put DynamoDB operations
+
+v9.3.17 (2024-09-13)
+-------------------------
+ * Move core channel log stuff into clogs utility package we could potentially share with courier
+ * Start writing channel logs to DynamoDB
+ * Fix go version in DockerFile
+
+v9.3.16 (2024-09-12)
+-------------------------
+ * Remove old task queues
+
+v9.3.15 (2024-09-12)
+-------------------------
+ * Add new prefixed queues for batch and handler whilst retaining previous ones
+ * Remove starts queue that was replaced by tasks:throttled
+
+v9.3.14 (2024-09-12)
+-------------------------
+ * Throttle broadcasts by outbox size too
+
+v9.3.13 (2024-09-11)
+-------------------------
+ * Fix throttle queue task
+ * Update to go 1.23
+
+v9.3.12 (2024-09-10)
+-------------------------
+ * Add dedicated starts queue and a cron to throttle it based on outbox counts
+
+v9.3.11 (2024-08-22)
+-------------------------
+ * Always strip / from session object keys
+
+v9.3.10 (2024-08-22)
+-------------------------
+ * Tweak error message when loading session from S3
+
+v9.3.9 (2024-08-22)
+-------------------------
+ * Add test of dynamodb reachability to mailroom startup
+
+v9.3.8 (2024-08-22)
+-------------------------
+ * Add Dynamo client to runtime
+
+v9.3.7 (2024-08-22)
+-------------------------
+ * Delete unused test-smtp command
+ * Update to aws-sdk-go-v2
+
+v9.3.6 (2024-08-21)
+-------------------------
+ * Update to latest goflow (with phone parsing workaround)
+
+v9.3.5 (2024-08-19)
+-------------------------
+ * Fix ticket modifier test
+
+v9.3.4 (2024-08-19)
+-------------------------
+ * Update to latest goflow
+
 v9.3.3 (2024-08-08)
 -------------------------
  * Don't try to load ticket body when loading tickets with a contact

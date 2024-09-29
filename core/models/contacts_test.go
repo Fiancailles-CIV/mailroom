@@ -3,6 +3,8 @@ package models_test
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -20,7 +22,6 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/exp/maps"
 )
 
 func TestContacts(t *testing.T) {
@@ -420,7 +421,7 @@ func TestGetOrCreateContactIDsFromURNs(t *testing.T) {
 		fetched, created, err := models.GetOrCreateContactsFromURNs(ctx, rt.DB, oa, tc.urns)
 		assert.NoError(t, err, "%d: error getting contact ids", i)
 		assert.Equal(t, tc.fetched, fetched, "%d: fetched contacts mismatch", i)
-		assert.Equal(t, tc.created, maps.Keys(created), "%d: created contacts mismatch", i)
+		assert.Equal(t, tc.created, slices.AppendSeq([]urns.URN{}, maps.Keys(created)), "%d: created contacts mismatch", i)
 	}
 }
 
@@ -566,6 +567,8 @@ func TestUpdateContactURNs(t *testing.T) {
 
 	defer testsuite.Reset(testsuite.ResetAll)
 
+	testdata.InsertContactGroup(rt, testdata.Org1, "e3374234-8131-4f65-9c51-ce84fd7f3bb5", "No URN", `urn = ""`)
+
 	oa, err := models.GetOrgAssets(ctx, rt, testdata.Org1.ID)
 	assert.NoError(t, err)
 
@@ -575,8 +578,20 @@ func TestUpdateContactURNs(t *testing.T) {
 	assertContactURNs := func(contactID models.ContactID, expected []string) {
 		var actual []string
 		err = rt.DB.Select(&actual, `SELECT identity FROM contacts_contacturn WHERE contact_id = $1 ORDER BY priority DESC`, contactID)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, expected, actual, "URNs mismatch for contact %d", contactID)
+	}
+	assertModifiedOnUpdated := func(contactID models.ContactID, greaterThan time.Time) {
+		var modifiedOn time.Time
+		err = rt.DB.Get(&modifiedOn, `SELECT modified_on FROM contacts_contact WHERE id = $1`, contactID)
+		require.NoError(t, err)
+		assert.Greater(t, modifiedOn, greaterThan, "URNs mismatch for contact %d", contactID)
+	}
+	assertGroups := func(contactID models.ContactID, expected []string) {
+		var actual []string
+		err = rt.DB.Select(&actual, `SELECT g.name FROM contacts_contactgroup_contacts gc INNER JOIN contacts_contactgroup g ON g.id = gc.contactgroup_id WHERE gc.contact_id = $1`, contactID)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, expected, actual)
 	}
 
 	assertContactURNs(testdata.Cathy.ID, []string{"tel:+16055741111"})
@@ -607,12 +622,20 @@ func TestUpdateContactURNs(t *testing.T) {
 	assertContactURNs(testdata.Cathy.ID, []string{"tel:+16055700001"})
 	assertdb.Query(t, rt.DB, `SELECT count(*) FROM contacts_contacturn WHERE contact_id IS NULL`).Returns(1) // now orphaned
 
+	t1 := time.Now()
+
 	// steal a URN from Bob
-	err = models.UpdateContactURNs(ctx, rt.DB, oa, []*models.ContactURNsChanged{{testdata.Cathy.ID, testdata.Org1.ID, []urns.URN{"tel:+16055700001", "tel:+16055700002"}}})
+	err = models.UpdateContactURNs(ctx, rt.DB, oa, []*models.ContactURNsChanged{
+		{testdata.Cathy.ID, testdata.Org1.ID, []urns.URN{"tel:+16055700001", "tel:+16055700002"}},
+		{testdata.Alexandria.ID, testdata.Org1.ID, []urns.URN{"tel:+16055742222"}},
+	})
 	assert.NoError(t, err)
 
 	assertContactURNs(testdata.Cathy.ID, []string{"tel:+16055700001", "tel:+16055700002"})
-	assertContactURNs(testdata.Bob.ID, []string{"tel:+16055742222"})
+	assertContactURNs(testdata.Alexandria.ID, []string{"tel:+16055742222"})
+	assertContactURNs(testdata.Bob.ID, []string(nil))
+	assertModifiedOnUpdated(testdata.Bob.ID, t1)
+	assertGroups(testdata.Bob.ID, []string{"Active", "No URN"})
 
 	// steal the URN back from Cathy whilst simulataneously adding new URN to Cathy and not-changing anything for George
 	err = models.UpdateContactURNs(ctx, rt.DB, oa, []*models.ContactURNsChanged{
@@ -656,7 +679,7 @@ func TestLockContacts(t *testing.T) {
 	// try to get locks for 101, 102, 103
 	locks, skipped, err := models.LockContacts(ctx, rt, testdata.Org1.ID, []models.ContactID{101, 102, 103}, time.Second)
 	assert.NoError(t, err)
-	assert.ElementsMatch(t, []models.ContactID{101, 103}, maps.Keys(locks))
+	assert.ElementsMatch(t, []models.ContactID{101, 103}, slices.Collect(maps.Keys(locks)))
 	assert.Equal(t, []models.ContactID{102}, skipped) // because it's already locked
 
 	assertredis.Exists(t, rc, "lock:c:1:101")

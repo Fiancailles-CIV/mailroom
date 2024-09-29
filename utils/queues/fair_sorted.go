@@ -65,6 +65,21 @@ func (q *FairSorted) Push(rc redis.Conn, taskType string, ownerID int, task any,
 	return err
 }
 
+func (q *FairSorted) Owners(rc redis.Conn) ([]int, error) {
+	strs, err := redis.Strings(rc.Do("ZRANGE", q.activeKey(), 0, -1))
+	if err != nil {
+		return nil, err
+	}
+
+	actual := make([]int, len(strs))
+	for i, s := range strs {
+		owner, _ := strconv.ParseInt(s, 10, 64)
+		actual[i] = int(owner)
+	}
+
+	return actual, nil
+}
+
 func (q *FairSorted) activeKey() string {
 	return fmt.Sprintf("%s:active", q.keyBase)
 }
@@ -133,4 +148,24 @@ var scriptFSSize = redis.NewScript(1, luaFSSize)
 // Size returns the total number of tasks for the passed in queue across all owners
 func (q *FairSorted) Size(rc redis.Conn) (int, error) {
 	return redis.Int(scriptFSSize.Do(rc, q.activeKey(), q.keyBase))
+}
+
+//go:embed lua/fair_sorted_pause.lua
+var luaFSPause string
+var scriptFSPause = redis.NewScript(1, luaFSPause)
+
+// Pause marks the given task owner as paused so their tasks are not popped.
+func (q *FairSorted) Pause(rc redis.Conn, ownerID int) error {
+	_, err := scriptFSPause.Do(rc, q.activeKey(), strconv.FormatInt(int64(ownerID), 10))
+	return err
+}
+
+//go:embed lua/fair_sorted_resume.lua
+var luaFSResume string
+var scriptFSResume = redis.NewScript(1, luaFSResume)
+
+// Resume marks the given task owner as active so their tasks will be popped.
+func (q *FairSorted) Resume(rc redis.Conn, ownerID int) error {
+	_, err := scriptFSResume.Do(rc, q.activeKey(), strconv.FormatInt(int64(ownerID), 10))
+	return err
 }

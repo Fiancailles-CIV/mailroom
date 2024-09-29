@@ -12,7 +12,8 @@ import (
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/jmoiron/sqlx"
 	"github.com/nyaruka/gocommon/analytics"
-	"github.com/nyaruka/gocommon/s3x"
+	"github.com/nyaruka/gocommon/aws/dynamo"
+	"github.com/nyaruka/gocommon/aws/s3x"
 	"github.com/nyaruka/mailroom/core/tasks"
 	"github.com/nyaruka/mailroom/runtime"
 	"github.com/nyaruka/mailroom/web"
@@ -28,8 +29,9 @@ type Mailroom struct {
 	wg   *sync.WaitGroup
 	quit chan bool
 
-	batchForeman   *Foreman
-	handlerForeman *Foreman
+	handlerForeman   *Foreman
+	batchForeman     *Foreman
+	throttledForeman *Foreman
 
 	webserver *web.Server
 }
@@ -42,8 +44,10 @@ func NewMailroom(config *runtime.Config) *Mailroom {
 		wg:   &sync.WaitGroup{},
 	}
 	mr.ctx, mr.cancel = context.WithCancel(context.Background())
-	mr.batchForeman = NewForeman(mr.rt, mr.wg, tasks.BatchQueue, config.BatchWorkers)
+
 	mr.handlerForeman = NewForeman(mr.rt, mr.wg, tasks.HandlerQueue, config.HandlerWorkers)
+	mr.batchForeman = NewForeman(mr.rt, mr.wg, tasks.BatchQueue, config.BatchWorkers)
+	mr.throttledForeman = NewForeman(mr.rt, mr.wg, tasks.ThrottledQueue, config.BatchWorkers)
 
 	return mr
 }
@@ -91,6 +95,17 @@ func (mr *Mailroom) Start() error {
 		log.Warn("fcm not configured, no android syncing")
 	}
 
+	// setup DynamoDB
+	mr.rt.Dynamo, err = dynamo.NewService(c.AWSAccessKeyID, c.AWSSecretAccessKey, c.AWSRegion, c.DynamoEndpoint, c.DynamoTablePrefix)
+	if err != nil {
+		return err
+	}
+	if err := mr.rt.Dynamo.Test(mr.ctx); err != nil {
+		log.Error("dynamodb not reachable", "error", err)
+	} else {
+		log.Info("dynamodb ok")
+	}
+
 	// setup S3 storage
 	mr.rt.S3, err = s3x.NewService(c.AWSAccessKeyID, c.AWSSecretAccessKey, c.AWSRegion, c.S3Endpoint, c.S3Minio)
 	if err != nil {
@@ -107,11 +122,6 @@ func (mr *Mailroom) Start() error {
 		log.Error("sessions bucket not accessible", "error", err)
 	} else {
 		log.Info("sessions bucket ok")
-	}
-	if err := mr.rt.S3.Test(mr.ctx, c.S3LogsBucket); err != nil {
-		log.Error("logs bucket not accessible", "error", err)
-	} else {
-		log.Info("logs bucket ok")
 	}
 
 	// initialize our elastic client
@@ -130,8 +140,9 @@ func (mr *Mailroom) Start() error {
 	analytics.Start()
 
 	// init our foremen and start it
-	mr.batchForeman.Start()
 	mr.handlerForeman.Start()
+	mr.batchForeman.Start()
+	mr.throttledForeman.Start()
 
 	// start our web server
 	mr.webserver = web.NewServer(mr.ctx, mr.rt, mr.wg)
@@ -149,8 +160,10 @@ func (mr *Mailroom) Stop() error {
 	log := slog.With("comp", "mailroom")
 	log.Info("mailroom stopping")
 
-	mr.batchForeman.Stop()
 	mr.handlerForeman.Stop()
+	mr.batchForeman.Stop()
+	mr.throttledForeman.Stop()
+
 	analytics.Stop()
 	close(mr.quit)
 	mr.cancel()

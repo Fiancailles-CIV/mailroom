@@ -10,9 +10,10 @@ import (
 	"mime"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"time"
 
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/nyaruka/gocommon/dbutil"
 	"github.com/nyaruka/gocommon/httpx"
 	"github.com/nyaruka/gocommon/jsonx"
@@ -59,6 +60,10 @@ func airtimeServiceFactory(rt *runtime.Runtime) engine.AirtimeServiceFactory {
 // OrgID is our type for org ids
 type OrgID int
 
+func (i OrgID) String() string {
+	return strconv.FormatInt(int64(i), 10)
+}
+
 // OrgUUID is our type for org UUIDs
 type OrgUUID uuids.UUID
 
@@ -81,6 +86,7 @@ type Org struct {
 		FlowSMTP        null.String   `json:"flow_smtp"`
 		PrometheusToken null.String   `json:"prometheus_token"`
 		Config          null.Map[any] `json:"config"`
+		OutboxCount     int           `json:"outbox_count"`
 	}
 	env envs.Environment
 }
@@ -102,6 +108,8 @@ func (o *Org) PrometheusToken() string { return string(o.o.PrometheusToken) }
 
 // Environment returns this org as an engine environment
 func (o *Org) Environment() envs.Environment { return o.env }
+
+func (o *Org) OutboxCount() int { return o.o.OutboxCount }
 
 // MarshalJSON is our custom marshaller so that our inner env get output
 func (o *Org) MarshalJSON() ([]byte, error) {
@@ -184,7 +192,7 @@ func (o *Org) StoreAttachment(ctx context.Context, rt *runtime.Runtime, filename
 
 	path := o.attachmentPath("attachments", filename)
 
-	url, err := rt.S3.PutObject(ctx, rt.Config.S3AttachmentsBucket, path, contentType, contentBytes, s3.BucketCannedACLPublicRead)
+	url, err := rt.S3.PutObject(ctx, rt.Config.S3AttachmentsBucket, path, contentType, contentBytes, types.ObjectCannedACLPublicRead)
 	if err != nil {
 		return "", fmt.Errorf("unable to store attachment content: %w", err)
 	}
@@ -236,7 +244,8 @@ SELECT ROW_TO_JSON(o) FROM (SELECT
 			WHERE c.org_id = o.id AND c.is_active = TRUE AND c.country IS NOT NULL
 			GROUP BY c.country ORDER BY count(c.country) desc, country LIMIT 1
 	    ), ''
-	) AS default_country
+	) AS default_country,
+	(SELECT SUM(count) FROM msgs_systemlabelcount WHERE org_id = $1 AND label_type = 'O') AS outbox_count
 	FROM orgs_org o
 	WHERE id = $1
 ) o`

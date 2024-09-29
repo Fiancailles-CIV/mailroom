@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strconv"
 	"time"
 
@@ -1183,7 +1184,7 @@ func updateURNChannel(urn urns.URN, channel *Channel) (urns.URN, error) {
 
 // UpdateContactModifiedOn updates modified_on the passed in contacts
 func UpdateContactModifiedOn(ctx context.Context, db DBorTx, contactIDs []ContactID) error {
-	for _, idBatch := range ChunkSlice(contactIDs, 100) {
+	for idBatch := range slices.Chunk(contactIDs, 100) {
 		_, err := db.ExecContext(ctx, `UPDATE contacts_contact SET modified_on = NOW() WHERE id = ANY($1)`, pq.Array(idBatch))
 		if err != nil {
 			return fmt.Errorf("error updating modified_on for contact batch: %w", err)
@@ -1288,10 +1289,29 @@ func UpdateContactURNs(ctx context.Context, db DBorTx, oa *OrgAssets, changes []
 			}
 		}
 
-		// finally mark all the orphaned contacts as modified
+		// finally update the contacts who had URNs stolen from them
 		if len(orphanedIDs) > 0 {
-			err := UpdateContactModifiedOn(ctx, db, orphanedIDs)
+			orphans, err := LoadContacts(ctx, db, oa, orphanedIDs)
 			if err != nil {
+				return fmt.Errorf("error loading contacts affecting by URN stealing: %w", err)
+			}
+
+			// turn them into flow contacts..
+			flowOrphans := make([]*flows.Contact, len(orphans))
+			for i, c := range orphans {
+				flowOrphans[i], err = c.FlowContact(oa)
+				if err != nil {
+					return fmt.Errorf("error creating orphan flow contact: %w", err)
+				}
+			}
+
+			// and re-calculate their dynamic groups
+			if err := CalculateDynamicGroups(ctx, db, oa, flowOrphans); err != nil {
+				return fmt.Errorf("error re-calculating dynamic groups for orphaned contacts: %w", err)
+			}
+
+			// and mark them as updated
+			if err := UpdateContactModifiedOn(ctx, db, orphanedIDs); err != nil {
 				return fmt.Errorf("error updating orphaned contacts: %w", err)
 			}
 		}
@@ -1346,6 +1366,7 @@ func (i URNID) Value() (driver.Value, error)  { return null.IntValue(i) }
 func (i *URNID) UnmarshalJSON(b []byte) error { return null.UnmarshalInt(b, i) }
 func (i URNID) MarshalJSON() ([]byte, error)  { return null.MarshalInt(i) }
 
+func (i ContactID) String() string                { return strconv.FormatInt(int64(i), 10) }
 func (i *ContactID) Scan(value any) error         { return null.ScanInt(value, i) }
 func (i ContactID) Value() (driver.Value, error)  { return null.IntValue(i) }
 func (i *ContactID) UnmarshalJSON(b []byte) error { return null.UnmarshalInt(b, i) }
